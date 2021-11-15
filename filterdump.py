@@ -251,26 +251,46 @@ def xmlstr(element):
     return ET.tostring(element, encoding='unicode')
 
 
-@timed
-def load_templates(source, target):
-    print(f'<templates xmlns="{DEFAULT_NS_URI}">',
-          file=target)
-    siteinfo, templates = None, {}
-    for event, e in ET.iterparse(source, events=('end', 'start-ns')):
+def write_dump_header(elem, out):
+    copy = ET.Element(elem.tag, elem.attrib)
+    copy.text = ' '    # must be nonempty
+    string = ET.tostring(copy, encoding='unicode')
+    string = string.replace('</mediawiki>', '').strip()
+    print(string, file=out)
+
+
+def process_dump(source, target, siteinfo_callback, page_callback):
+    for event, e in ET.iterparse(source, events=('start', 'end', 'start-ns')):
         if event == 'start-ns':
             register_namespace(*e)
+        elif event == 'start' and e.tag == tag('mediawiki'):
+            write_dump_header(e, target)
         elif event == 'end' and e.tag == tag('siteinfo'):
-            print('  ' + xmlstr(e), file=target)
-            siteinfo = SiteInfo.from_xml(e)
+            siteinfo_callback(e)
+            print('  ' + xmlstr(e), end='', file=target)
         elif event == 'end' and e.tag == tag('page'):
-            title = first_child(e, 'title').text
-            template_ns = f'{siteinfo.template_namespace_name()}:'
-            if title.startswith(template_ns):
-                print('  ' + xmlstr(e), file=target)
-                template_name = title[len(template_ns):]
-                templates[template_name] = Page.from_xml(e)
+            page_callback(e)
             e.clear()    #  preserve memory
-    print('</templates>', file=target)
+    print('</mediawiki>', file=target)
+
+
+@timed
+def load_templates(source, target):
+    siteinfo, templates = None, {}
+
+    def store_siteinfo(elem):
+        nonlocal siteinfo
+        siteinfo = SiteInfo.from_xml(elem)
+
+    def store_template(elem):
+        title = first_child(elem, 'title').text
+        template_ns = f'{siteinfo.template_namespace_name()}:'
+        if title.startswith(template_ns):
+            print('  ' + xmlstr(elem), file=target)
+            template_name = title[len(template_ns):]
+            templates[template_name] = Page.from_xml(elem)
+
+    process_dump(source, target, store_siteinfo, store_template)
     return siteinfo, templates
 
 
@@ -343,36 +363,25 @@ def remove_filtered_templates(siteinfo, wikicode, templates):
                 logger.error(f'failed to remove {tname}: {e}')
 
 
-def write_dump_header(elem, out):
-    copy = ET.Element(elem.tag, elem.attrib)
-    copy.text = ' '    # must be nonempty
-    string = ET.tostring(copy, encoding='unicode')
-    string = string.replace('</mediawiki>', '').strip()
-    print(string, file=out)
-
-
 @timed
 def filter_dump(source, target, templates):
     siteinfo = None
-    for event, e in ET.iterparse(source, events=('start', 'end', 'start-ns')):
-        if event == 'start-ns':
-            register_namespace(*e)
-        elif event == 'start' and e.tag == tag('mediawiki'):
-            write_dump_header(e, target)
-        elif event == 'end' and e.tag == tag('siteinfo'):
-            siteinfo = SiteInfo.from_xml(e)
-            print('  ' + xmlstr(e), end='', file=target)
-        elif event == 'end' and e.tag == tag('page'):
-            page = Page.from_xml(e)
-            wikicode = mwparserfromhell.parse(page.text)
-            remove_filtered_templates(siteinfo, wikicode, templates)
-            revision = first_child(e, 'revision')
-            textelem = first_child(revision, 'text')
-            textelem.text = str(wikicode)
-            # TODO fix attrib "bytes" in textelem
-            print(xmlstr(e), file=target)
-            e.clear()    #  preserve memory
-    print('</mediawiki>', file=target)
+
+    def store_siteinfo(elem):
+        nonlocal siteinfo
+        siteinfo = SiteInfo.from_xml(elem)
+
+    def filter_page_text(elem):
+        page = Page.from_xml(elem)
+        wikicode = mwparserfromhell.parse(page.text)
+        remove_filtered_templates(siteinfo, wikicode, templates)
+        revision = first_child(elem, 'revision')
+        textelem = first_child(revision, 'text')
+        textelem.text = str(wikicode)
+        # TODO fix attrib "bytes" in textelem
+        print(xmlstr(elem), file=target)
+
+    process_dump(source, target, store_siteinfo, filter_page_text)
 
 
 def main(argv):
