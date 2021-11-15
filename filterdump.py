@@ -17,6 +17,9 @@ logging.basicConfig()
 logger = logging.getLogger()
 
 
+DEFAULT_NS_URI = 'http://www.mediawiki.org/xml/export-0.10/'
+
+
 # Filter templates with names starting with any of these strings
 FILTERED_TEMPLATE_PREFIXES = {
     'Infobox',
@@ -163,6 +166,8 @@ def nopen(fn, *args):
 
 
 def register_namespace(prefix, uri):
+    if prefix == '' and uri != DEFAULT_NS_URI:
+        logger.warning(f'unexpected default namespace "{uri}"')
     ET.register_namespace(prefix, uri)
     register_namespace.namespaces[prefix] = uri
 register_namespace.namespaces = {}
@@ -248,7 +253,7 @@ def xmlstr(element):
 
 @timed
 def load_templates(source, target):
-    print('<templates xmlns="http://www.mediawiki.org/xml/export-0.10/">',
+    print(f'<templates xmlns="{DEFAULT_NS_URI}">',
           file=target)
     siteinfo, templates = None, {}
     for event, e in ET.iterparse(source, events=('end', 'start-ns')):
@@ -338,19 +343,36 @@ def remove_filtered_templates(siteinfo, wikicode, templates):
                 logger.error(f'failed to remove {tname}: {e}')
 
 
-def filter_dump(source, templates):
+def write_dump_header(elem, out):
+    copy = ET.Element(elem.tag, elem.attrib)
+    copy.text = ' '    # must be nonempty
+    string = ET.tostring(copy, encoding='unicode')
+    string = string.replace('</mediawiki>', '').strip()
+    print(string, file=out)
+
+
+@timed
+def filter_dump(source, target, templates):
     siteinfo = None
-    for event, e in ET.iterparse(source, events=('end', 'start-ns')):
+    for event, e in ET.iterparse(source, events=('start', 'end', 'start-ns')):
         if event == 'start-ns':
             register_namespace(*e)
+        elif event == 'start' and e.tag == tag('mediawiki'):
+            write_dump_header(e, target)
         elif event == 'end' and e.tag == tag('siteinfo'):
             siteinfo = SiteInfo.from_xml(e)
+            print('  ' + xmlstr(e), end='', file=target)
         elif event == 'end' and e.tag == tag('page'):
             page = Page.from_xml(e)
             wikicode = mwparserfromhell.parse(page.text)
             remove_filtered_templates(siteinfo, wikicode, templates)
-            print(wikicode)
+            revision = first_child(e, 'revision')
+            textelem = first_child(revision, 'text')
+            textelem.text = str(wikicode)
+            # TODO fix attrib "bytes" in textelem
+            print(xmlstr(e), file=target)
             e.clear()    #  preserve memory
+    print('</mediawiki>', file=target)
 
 
 def main(argv):
@@ -375,7 +397,7 @@ def main(argv):
                 siteinfo, templates = load_templates(source, target)
 
     with zopen(args.dump) as source:
-        filter_dump(source, templates)
+        filter_dump(source, sys.stdout, templates)
 
 
 if __name__ == '__main__':
