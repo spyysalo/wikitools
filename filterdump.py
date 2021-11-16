@@ -288,6 +288,7 @@ def load_templates(source, target):
         if title.startswith(template_ns):
             print('  ' + xmlstr(elem), file=target)
             template_name = title[len(template_ns):]
+            template_name = normalize_template_name(template_name)
             templates[template_name] = Page.from_xml(elem)
 
     process_dump(source, target, store_siteinfo, store_template)
@@ -306,7 +307,10 @@ def is_parser_function(string):
 
 
 def normalize_template_name(name):
+    # TODO: implement more fully:
+    # https://en.wikipedia.org/wiki/Wikipedia:Page_name#Spaces,_underscores,_and_character_encoding
     name = str(name).strip()
+    name = name.replace(' ', '_')
     return name[0].upper() + name[1:]
 
 
